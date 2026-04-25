@@ -1,0 +1,286 @@
+<Window x:Class="model_kate.PresentationWpf.MainWindow"
+	xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+	xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+	Title="Kate" Height="680" Width="860" MinHeight="560" MinWidth="660"
+	WindowStyle="None" ResizeMode="CanResizeWithGrip"
+	AllowsTransparency="True"
+	Background="Transparent">
+
+	<Window.Resources>
+		<Style x:Key="ChromeBtn" TargetType="Button">
+			<Setter Property="Background" Value="Transparent"/>
+			<Setter Property="BorderThickness" Value="0"/>
+			<Setter Property="Foreground" Value="#2A4055"/>
+			<Setter Property="Width" Value="28"/>
+			<Setter Property="Height" Value="28"/>
+			<Setter Property="Cursor" Value="Hand"/>
+			<Setter Property="FontSize" Value="12"/>
+			<Setter Property="Template">
+				<Setter.Value>
+					<ControlTemplate TargetType="Button">
+						<Border x:Name="Bd" Background="{TemplateBinding Background}">
+							<ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+						</Border>
+						<ControlTemplate.Triggers>
+							<Trigger Property="IsMouseOver" Value="True">
+								<Setter TargetName="Bd" Property="Background" Value="#0D1A28"/>
+								<Setter Property="Foreground" Value="#00D4FF"/>
+							</Trigger>
+						</ControlTemplate.Triggers>
+					</ControlTemplate>
+				</Setter.Value>
+			</Setter>
+		</Style>
+	</Window.Resources>
+
+	<!-- Fundo com vidro fosco semi-transparente -->
+	<Border CornerRadius="18" Background="#D2050810"
+			BorderBrush="#30006080" BorderThickness="1">
+		<Border.Effect>
+			<BlurEffect Radius="0"/>
+		</Border.Effect>
+	<Grid>
+		<Grid.RowDefinitions>
+			<RowDefinition Height="36"/>
+			<RowDefinition Height="*"/>
+			<RowDefinition Height="Auto"/>
+		</Grid.RowDefinitions>
+
+		<!-- Barra de título / área de arraste -->
+		<Border Grid.Row="0" Background="#88010408"
+				BorderBrush="#20006080" BorderThickness="0,0,0,1"
+				CornerRadius="18,18,0,0"
+				MouseLeftButtonDown="TitleBar_MouseLeftButtonDown">
+			<Grid Margin="12,0">
+				<StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+					<Ellipse Width="7" Height="7" Margin="0,0,9,0">
+						<Ellipse.Fill>
+							<SolidColorBrush x:Name="TitleDotBrush" Color="#00D4FF"/>
+						</Ellipse.Fill>
+						<Ellipse.Effect>
+							<BlurEffect Radius="5"/>
+						</Ellipse.Effect>
+					</Ellipse>
+					<TextBlock Text="KATE" Foreground="#00D4FF" FontFamily="Consolas"
+							   FontSize="11" FontWeight="Bold" VerticalAlignment="Center" Margin="0,0,7,0"/>
+					<TextBlock Text="AI SYSTEM" Foreground="#122030"
+							   FontFamily="Consolas" FontSize="11" VerticalAlignment="Center"/>
+				</StackPanel>
+				<StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+					<Button x:Name="SettingsButton" Content="⚙" Click="SettingsButton_Click" Style="{StaticResource ChromeBtn}"/>
+					<Button x:Name="MinimizeButton" Content="─" Click="MinimizeButton_Click" Style="{StaticResource ChromeBtn}"/>
+					<Button x:Name="CloseButton" Content="✕" Click="CloseButton_Click" Style="{StaticResource ChromeBtn}"/>
+				</StackPanel>
+			</Grid>
+		</Border>
+
+		<!-- Área principal -->
+		<Grid Grid.Row="1">
+
+			<!-- Anéis e orbe central -->
+			<Grid HorizontalAlignment="Center" VerticalAlignment="Center" Margin="0,-48,0,0">
+
+				<!-- Anel externo decorativo (lento) -->
+				<Ellipse Width="318" Height="318" StrokeThickness="0.5"
+						 StrokeDashArray="1 8" RenderTransformOrigin="0.5,0.5">
+					<Ellipse.Stroke>
+						<SolidColorBrush Color="#0A1C2C"/>
+					</Ellipse.Stroke>
+					<Ellipse.RenderTransform>
+						<RotateTransform x:Name="DecorRingRotation"/>
+					</Ellipse.RenderTransform>
+				</Ellipse>
+
+				<!-- Anel externo principal -->
+				<Ellipse x:Name="RingOuter" Width="262" Height="262"
+						 StrokeDashArray="4 10" RenderTransformOrigin="0.5,0.5" StrokeThickness="1">
+					<Ellipse.Stroke>
+						<SolidColorBrush x:Name="RingOuterBrush" Color="#0E2030"/>
+					</Ellipse.Stroke>
+					<Ellipse.RenderTransform>
+						<RotateTransform x:Name="OuterRingRotation"/>
+					</Ellipse.RenderTransform>
+				</Ellipse>
+
+				<!-- Anel médio (gira ao contrário) -->
+				<Ellipse x:Name="RingMiddle" Width="202" Height="202"
+						 StrokeDashArray="2 5" RenderTransformOrigin="0.5,0.5"
+						 StrokeThickness="1" Opacity="0.75">
+					<Ellipse.Stroke>
+						<SolidColorBrush x:Name="RingMiddleBrush" Color="#008AA0"/>
+					</Ellipse.Stroke>
+					<Ellipse.RenderTransform>
+						<RotateTransform x:Name="MiddleRingRotation"/>
+					</Ellipse.RenderTransform>
+				</Ellipse>
+
+				<!-- Halo de brilho (blur) -->
+				<Ellipse x:Name="OrbGlow" Width="136" Height="136" Opacity="0.85">
+					<Ellipse.Fill>
+						<RadialGradientBrush>
+							<GradientStop Color="#2800C0D8" Offset="0.15"/>
+							<GradientStop Color="Transparent" Offset="1"/>
+						</RadialGradientBrush>
+					</Ellipse.Fill>
+					<Ellipse.Effect>
+						<BlurEffect Radius="20"/>
+					</Ellipse.Effect>
+				</Ellipse>
+
+				<!-- Orbe central -->
+				<Ellipse x:Name="CentralOrb" Width="90" Height="90"
+						 RenderTransformOrigin="0.5,0.5">
+					<Ellipse.Fill>
+						<RadialGradientBrush>
+							<GradientStop Color="#F0FFFFFF" Offset="0"/>
+							<GradientStop Color="#00D4FF" Offset="0.40"/>
+							<GradientStop Color="#002840" Offset="1"/>
+						</RadialGradientBrush>
+					</Ellipse.Fill>
+					<Ellipse.Effect>
+						<BlurEffect Radius="2.5"/>
+					</Ellipse.Effect>
+					<Ellipse.RenderTransform>
+						<ScaleTransform x:Name="OrbScale" ScaleX="1" ScaleY="1"/>
+					</Ellipse.RenderTransform>
+				</Ellipse>
+
+				<!-- Letra K no orbe -->
+				<TextBlock Text="K" Foreground="#DDFFFFFF" FontFamily="Consolas"
+						   FontSize="28" FontWeight="Bold"
+						   HorizontalAlignment="Center" VerticalAlignment="Center"
+						   IsHitTestVisible="False"/>
+			</Grid>
+
+			<!-- Canvas da forma de onda (preenchido via code-behind) -->
+			<Canvas x:Name="WaveformCanvas" Width="400" Height="64"
+					HorizontalAlignment="Center" VerticalAlignment="Center"
+					Margin="0,182,0,0" ClipToBounds="True"/>
+
+			<!-- Texto de status -->
+			<TextBlock x:Name="DebugTextBlock"
+					   HorizontalAlignment="Center" VerticalAlignment="Center"
+					   Foreground="#152535" FontFamily="Consolas" FontSize="10"
+					   TextAlignment="Center" Margin="0,268,0,0"
+					   TextWrapping="Wrap" MaxWidth="500"/>
+
+			<!-- Área de resposta (transparente, visual sci-fi) -->
+			<Border VerticalAlignment="Bottom" Margin="60,0,60,14"
+					MaxHeight="170">
+				<ScrollViewer VerticalScrollBarVisibility="Auto"
+							  HorizontalScrollBarVisibility="Disabled">
+					<TextBox x:Name="ResponseTextBox" IsReadOnly="True" TextWrapping="Wrap"
+							 BorderThickness="0" AcceptsReturn="True"
+							 Foreground="#6AB4CC" FontFamily="Segoe UI" FontSize="15"
+							 TextAlignment="Center" CaretBrush="Transparent">
+						<TextBox.Background>
+							<SolidColorBrush Color="Transparent"/>
+						</TextBox.Background>
+						<TextBox.Style>
+							<Style TargetType="TextBox">
+								<Setter Property="Template">
+									<Setter.Value>
+										<ControlTemplate TargetType="TextBox">
+											<Border Background="{TemplateBinding Background}">
+												<ScrollViewer x:Name="PART_ContentHost"/>
+											</Border>
+										</ControlTemplate>
+									</Setter.Value>
+								</Setter>
+							</Style>
+						</TextBox.Style>
+					</TextBox>
+				</ScrollViewer>
+			</Border>
+
+		</Grid>
+
+		<!-- Barra de entrada (bottom) -->
+		<Border Grid.Row="2" Margin="40,0,40,20" Height="46" CornerRadius="23"
+				Background="#99010408" BorderBrush="#30006080" BorderThickness="1">
+			<Grid>
+				<Grid.ColumnDefinitions>
+					<ColumnDefinition Width="*"/>
+					<ColumnDefinition Width="46"/>
+				</Grid.ColumnDefinitions>
+				<TextBox x:Name="PromptTextBox" BorderThickness="0"
+						 Foreground="#3A7A99" FontFamily="Segoe UI" FontSize="13"
+						 VerticalContentAlignment="Center" Padding="20,0,0,0"
+						 CaretBrush="#00D4FF">
+					<TextBox.Background>
+						<SolidColorBrush Color="Transparent"/>
+					</TextBox.Background>
+					<TextBox.Style>
+						<Style TargetType="TextBox">
+							<Setter Property="Template">
+								<Setter.Value>
+									<ControlTemplate TargetType="TextBox">
+										<Border Background="{TemplateBinding Background}"
+												Padding="{TemplateBinding Padding}">
+											<ScrollViewer x:Name="PART_ContentHost" VerticalAlignment="Center"/>
+										</Border>
+									</ControlTemplate>
+								</Setter.Value>
+							</Setter>
+						</Style>
+					</TextBox.Style>
+				</TextBox>
+				<Button x:Name="SendButton" Grid.Column="1" Content="▶"
+						Click="SendButton_Click" Foreground="#00D4FF"
+						BorderThickness="0" FontSize="13" Cursor="Hand">
+					<Button.Background>
+						<SolidColorBrush Color="#04090F"/>
+					</Button.Background>
+					<Button.Template>
+						<ControlTemplate TargetType="Button">
+							<Border Background="{TemplateBinding Background}" CornerRadius="0,23,23,0">
+								<ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+							</Border>
+							<ControlTemplate.Triggers>
+								<Trigger Property="IsMouseOver" Value="True">
+									<Setter Property="Background" Value="#0A2540"/>
+								</Trigger>
+							</ControlTemplate.Triggers>
+						</ControlTemplate>
+					</Button.Template>
+				</Button>
+			</Grid>
+		</Border>
+
+		<!-- Controles ocultos (compatibilidade com code-behind) -->
+		<Ellipse x:Name="RecordingIndicator" Grid.Row="0" Width="0" Height="0" Visibility="Collapsed"/>
+		<Button x:Name="MicButton" Grid.Row="0" Visibility="Collapsed" Click="MicButton_Click"/>
+		<TextBox x:Name="RecognizedTextBox" Grid.Row="0" Visibility="Collapsed"/>
+		<TextBox x:Name="CommandTextBox" Grid.Row="0" Visibility="Collapsed"/>
+
+	</Grid>
+	</Border>
+
+	<!-- Animações permanentes dos anéis e orbe -->
+	<Window.Triggers>
+		<EventTrigger RoutedEvent="Window.Loaded">
+			<BeginStoryboard>
+				<Storyboard RepeatBehavior="Forever">
+					<DoubleAnimation Storyboard.TargetName="OuterRingRotation"
+									 Storyboard.TargetProperty="Angle"
+									 From="0" To="360" Duration="0:0:18"/>
+					<DoubleAnimation Storyboard.TargetName="MiddleRingRotation"
+									 Storyboard.TargetProperty="Angle"
+									 From="0" To="-360" Duration="0:0:11"/>
+					<DoubleAnimation Storyboard.TargetName="DecorRingRotation"
+									 Storyboard.TargetProperty="Angle"
+									 From="0" To="360" Duration="0:0:38"/>
+					<DoubleAnimation Storyboard.TargetName="OrbScale"
+									 Storyboard.TargetProperty="ScaleX"
+									 From="1.0" To="1.065" Duration="0:0:2.8"
+									 AutoReverse="True"/>
+					<DoubleAnimation Storyboard.TargetName="OrbScale"
+									 Storyboard.TargetProperty="ScaleY"
+									 From="1.0" To="1.065" Duration="0:0:2.8"
+									 AutoReverse="True"/>
+				</Storyboard>
+			</BeginStoryboard>
+		</EventTrigger>
+	</Window.Triggers>
+
+</Window>

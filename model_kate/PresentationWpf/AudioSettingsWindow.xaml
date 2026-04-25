@@ -1,0 +1,19 @@
+<Window x:Class="model_kate.PresentationWpf.AudioSettingsWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Configurações de Áudio" Height="300" Width="500">
+    <Grid Margin="20">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+        <StackPanel>
+            <TextBlock Text="Selecione o microfone:" FontWeight="Bold"/>
+            <ComboBox x:Name="DeviceComboBox" Margin="0,10,0,10" DisplayMemberPath="name" SelectedValuePath="index"/>
+            <TextBlock Text="Selecione a saída de áudio:" FontWeight="Bold" Margin="0,20,0,0"/>
+            <ComboBox x:Name="OutputComboBox" Margin="0,10,0,10" DisplayMemberPath="name" SelectedValuePath="index"/>
+        </StackPanel>
+        <Button Grid.Row="2" Content="Salvar" Width="100" Height="30" HorizontalAlignment="Right" Click="SaveButton_Click"/>
+    </Grid>
+</Window>

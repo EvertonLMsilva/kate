@@ -1,0 +1,81 @@
+# ── .NET / C# ────────────────────────────────────────────────────────────────
+bin/
+obj/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+.vs/
+*.pdb
+*.cache
+
+# Pacotes NuGet restaurados
+packages/
+*.nupkg
+project.lock.json
+project.assets.json
+*.nuget.props
+*.nuget.targets
+
+# Publicação
+publish/
+out/
+
+# ── Kate: dados de runtime ───────────────────────────────────────────────────
+*.db
+*.db-shm
+*.db-wal
+kate_memory.json
+erro_kate.txt
+*.log
+speaker_profile.json
+
+# ── Modelos de IA (binários grandes — não vão para o git) ────────────────────
+# Vosk STT
+vosk-model-*/
+*.zip
+
+# Piper TTS
+*.onnx
+*.onnx.json
+
+# Whisper
+*.bin
+libopenblas.dll
+whisper*/
+
+# Instaladores e executáveis de setup
+OllamaSetup.exe
+*.exe
+*.msi
+
+# DLLs nativas (exceto as do NuGet que ficam em bin/ já ignorado)
+libvosk.dll
+libespeak-ng.dll
+
+# Pasta de modelos Ollama / experimentação
+modelo/
+
+# ── Arquivos do usuário criados pela Kate ────────────────────────────────────
+arquivos/
+
+# ── Pastas de recursos binários ──────────────────────────────────────────────
+# (mantenha apenas README.md dessas pastas)
+documentacao/vosk-model-*/
+documentacao/pipe/
+documentacao/whisper*/
+documentacao/*.zip
+ia_local/whisper/
+ia_local/OllamaSetup.exe
+voz/piper/
+voz/vosk-model-*/
+
+# ── OS / IDE ─────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+*.bak
+*~
+.idea/
+*.iml

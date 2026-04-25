@@ -1,0 +1,59 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\model_kate\src\Application\model_kate.Application.csproj" />
+    <ProjectReference Include="..\..\model_kate\src\Domain\model_kate.Domain.csproj" />
+    <ProjectReference Include="..\..\model_kate\src\Infrastructure\model_kate.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\model_kate\src\Voice\model_kate.Voice.csproj" />
+  </ItemGroup>
+
+  <ItemGroup Condition="Exists('..\..\documentacao\vosk-model-pt-fb-v0.1.1-20220516_2113\vosk-model-pt-fb-v0.1.1-20220516_2113')">
+    <None Include="..\..\documentacao\vosk-model-pt-fb-v0.1.1-20220516_2113\vosk-model-pt-fb-v0.1.1-20220516_2113\**\*">
+      <Link>vosk-model-pt-fb-v0.1.1-20220516_2113\%(RecursiveDir)%(Filename)%(Extension)</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+  <ItemGroup Condition="Exists('..\..\voz\vosk-model-small-pt-0.3')">
+    <None Include="..\..\voz\vosk-model-small-pt-0.3\**\*">
+      <Link>vosk-model-small-pt-0.3\%(RecursiveDir)%(Filename)%(Extension)</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+  <ItemGroup Condition="Exists('..\..\voz\piper')">
+    <None Include="..\..\voz\piper\**\*">
+      <Link>piper\%(RecursiveDir)%(Filename)%(Extension)</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+  <ItemGroup Condition="Exists('..\..\ia_local\whisper')">
+    <None Include="..\..\ia_local\whisper\**\*">
+      <Link>ia_local\whisper\%(RecursiveDir)%(Filename)%(Extension)</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="kate_capabilities.md">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <PlatformTarget>x64</PlatformTarget>
+    <Prefer32Bit>false</Prefer32Bit>
+  </PropertyGroup>
+
+  <!-- Desbloqueia DLLs geradas pelo build (politica AppControl do Windows) -->
+  <Target Name="UnblockOutputFiles" AfterTargets="Build">
+    <Exec Command="powershell -NoProfile -Command &quot;Get-ChildItem '$(OutputPath)' -Recurse -Include *.dll,*.exe | Unblock-File -ErrorAction SilentlyContinue&quot;" />
+  </Target>
+
+</Project>
