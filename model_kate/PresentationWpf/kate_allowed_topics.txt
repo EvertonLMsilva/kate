@@ -1,0 +1,12 @@
+# Um topico por linha.
+# Kate so vai responder quando a pergunta tiver relacao com ao menos um topico abaixo.
+# Edite livremente para abrir ou fechar escopo.
+
+programacao csharp
+programacao dotnet
+wpf
+ollama
+vosk
+whisper
+piper
+arquitetura da kate

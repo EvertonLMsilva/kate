@@ -74,6 +74,7 @@ namespace model_kate.Infrastructure
         private readonly IFileSystemService _fileSystem;
         private readonly long _sessionId;
         private readonly string _capabilitiesBlock;  // injetado no system prompt
+        private readonly IReadOnlyList<string> _allowedTopics;
 
         // Padrões para extracão de fatos do usuário
         private static readonly (System.Text.RegularExpressions.Regex Pattern, string Key)[] FactPatterns =
@@ -105,8 +106,10 @@ namespace model_kate.Infrastructure
             _db = new KateDatabaseService();
             _sessionId = _db.CreateSession();
             _capabilitiesBlock = LoadCapabilitiesBlock();
+            _allowedTopics = LoadAllowedTopics();
             LoadPersistedHistory();
             LogFile.AppendLine($"[Ollama] Sessão DB iniciada: {_sessionId}. Modelo: {_model}");
+            LogFile.AppendLine($"[Policy] Tópicos liberados carregados: {_allowedTopics.Count}.");
         }
 
         public string CurrentModel => _model;
@@ -210,6 +213,13 @@ namespace model_kate.Infrastructure
                 return localAnswer;
             }
 
+            if (!IsPromptAllowed(normalizedPrompt, out var policyFeedback))
+            {
+                RegisterConversationTurn(normalizedPrompt, policyFeedback);
+                LogFile.AppendLine($"[Policy] Prompt fora do escopo (sync): {normalizedPrompt}");
+                return policyFeedback;
+            }
+
             // --- Detecção de intenção de código ---
             var codeIntent = DetectCodeIntent(normalizedPrompt);
             if (codeIntent != CodeIntent.None)
@@ -260,6 +270,8 @@ namespace model_kate.Infrastructure
 
             var capBlock = needsCapabilities ? _capabilitiesBlock : string.Empty;
             var effectiveSystemPrompt = (isTechnicalPrompt ? TechnicalSystemPrompt : PortugueseSystemPrompt) + capBlock;
+            effectiveSystemPrompt += BuildAllowedTopicsSystemBlock();
+            effectiveSystemPrompt += BuildAllowedTopicsSystemBlock();
 
             var userFacts = BuildUserFactsBlock();
             if (!string.IsNullOrWhiteSpace(userFacts))
@@ -270,6 +282,7 @@ namespace model_kate.Infrastructure
             {
                 userMessageForChat = $"Resultados obtidos da internet agora:\n{webContext}\n\nPergunta: {normalizedPrompt}";
                 effectiveSystemPrompt = PortugueseSystemPrompt + capBlock;
+                effectiveSystemPrompt += BuildAllowedTopicsSystemBlock();
                 if (!string.IsNullOrWhiteSpace(userFacts))
                     effectiveSystemPrompt += "\n\n" + userFacts;
             }
@@ -324,6 +337,66 @@ namespace model_kate.Infrastructure
             }
         }
 
+        private static IReadOnlyList<string> LoadAllowedTopics()
+        {
+            try
+            {
+                var path = Path.Combine(AppContext.BaseDirectory, "kate_allowed_topics.txt");
+                if (!File.Exists(path))
+                {
+                    LogFile.AppendLine("[Policy] kate_allowed_topics.txt nao encontrado. Allowlist desativada.");
+                    return [];
+                }
+
+                var topics = File.ReadAllLines(path, Encoding.UTF8)
+                    .Select(line => line.Trim())
+                    .Where(line => !string.IsNullOrWhiteSpace(line) && !line.StartsWith("#", StringComparison.Ordinal))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+                return topics;
+            }
+            catch (Exception ex)
+            {
+                LogFile.AppendLine($"[Policy] Falha ao carregar allowlist: {ex.Message}");
+                return [];
+            }
+        }
+
+        private string BuildAllowedTopicsSystemBlock()
+        {
+            if (_allowedTopics.Count == 0)
+            {
+                return string.Empty;
+            }
+
+            var topicsBlock = string.Join("\n- ", _allowedTopics);
+            return $"\n\nPOLITICA DE ESCOPO (OBRIGATORIA):\n- Responda apenas sobre os topicos liberados abaixo.\n- Se estiver fora do escopo, recuse em 1 frase e oriente a liberar novos topicos.\n- Nao invente resposta para tema bloqueado.\nTopicos liberados:\n- {topicsBlock}";
+        }
+
+        private bool IsPromptAllowed(string prompt, out string feedback)
+        {
+            if (string.IsNullOrWhiteSpace(prompt) || _allowedTopics.Count == 0)
+            {
+                feedback = string.Empty;
+                return true;
+            }
+
+            var normalizedPrompt = RemoveDiacritics(prompt).ToLowerInvariant();
+            foreach (var topic in _allowedTopics)
+            {
+                var normalizedTopic = RemoveDiacritics(topic).ToLowerInvariant();
+                if (normalizedPrompt.Contains(normalizedTopic, StringComparison.Ordinal))
+                {
+                    feedback = string.Empty;
+                    return true;
+                }
+            }
+
+            feedback = "Esse assunto ainda nao esta liberado para mim. Libere o topico em kate_allowed_topics.txt e eu respondo.";
+            return false;
+        }
+
         public async Task<string> GenerateResponseAsync(string prompt, Action<string>? onToken = null, CancellationToken cancellationToken = default)
         {
             var normalizedPrompt = prompt?.Trim() ?? string.Empty;
@@ -367,6 +440,14 @@ namespace model_kate.Infrastructure
                 RegisterConversationTurn(normalizedPrompt, fsResult);
                 onToken?.Invoke(fsResult);
                 return fsResult;
+            }
+
+            if (!IsPromptAllowed(normalizedPrompt, out var policyFeedback))
+            {
+                RegisterConversationTurn(normalizedPrompt, policyFeedback);
+                onToken?.Invoke(policyFeedback);
+                LogFile.AppendLine($"[Policy] Prompt fora do escopo (async): {normalizedPrompt}");
+                return policyFeedback;
             }
 
             var codeIntent = DetectCodeIntent(normalizedPrompt);
@@ -422,6 +503,7 @@ namespace model_kate.Infrastructure
             {
                 userMessageForChat = $"Resultados obtidos da internet agora:\n{webContext}\n\nPergunta: {normalizedPrompt}";
                 effectiveSystemPrompt = PortugueseSystemPrompt + capBlock;
+                effectiveSystemPrompt += BuildAllowedTopicsSystemBlock();
                 if (!string.IsNullOrWhiteSpace(userFacts))
                     effectiveSystemPrompt += "\n\n" + userFacts;
             }
