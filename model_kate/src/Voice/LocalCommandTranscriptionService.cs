@@ -138,7 +138,7 @@ namespace model_kate.Voice
             {
                 "-m", Quote(_modelPath),
                 "-f", Quote(waveFilePath),
-                "-l", "pt",
+                "-l", "auto",
                 "-nt",
                 "-np",
                 "-of", Quote(outputBasePath),
@@ -149,7 +149,7 @@ namespace model_kate.Voice
             {
                 "--model", Quote(_modelPath),
                 "--file", Quote(waveFilePath),
-                "--language", "pt",
+                "--language", "auto",
                 "--no-timestamps",
                 "--output-txt",
                 "--output-file", Quote(outputBasePath)
