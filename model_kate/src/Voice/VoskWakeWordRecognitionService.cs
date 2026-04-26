@@ -189,6 +189,21 @@ namespace model_kate.Voice
         /// <summary>
         /// Amplifica amostras PCM 16-bit com clipping para evitar overflow.
         /// </summary>
+        /// <summary>
+        /// Retorna true se o buffer PCM 16-bit contém energia de voz acima do limiar.
+        /// Usado para detectar fala em inglês que o Vosk (modelo pt) não reconhece.
+        /// </summary>
+        private static bool HasVoiceEnergy(byte[] buffer, int bytesRecorded, short threshold = 800)
+        {
+            for (var i = 0; i < bytesRecorded - 1; i += 2)
+            {
+                var sample = Math.Abs((short)(buffer[i] | (buffer[i + 1] << 8)));
+                if (sample >= threshold)
+                    return true;
+            }
+            return false;
+        }
+
         private static byte[] AmplifyBuffer(byte[] buffer, int bytesRecorded, float gain)
         {
             var amplified = new byte[bytesRecorded];
@@ -248,6 +263,19 @@ namespace model_kate.Voice
             if (_listeningForCommand && !_externallySuppressed)
             {
                 AppendCommandAudio(audioBuffer, audioBytes);
+
+                // Detecta presença de voz por energia RMS do PCM, independente do Vosk.
+                // Necessário para inglês: Vosk (modelo pt) não produz texto para inglês,
+                // mas o áudio existe e deve ser repassado ao Whisper.
+                if (!_hasDetectedCommandSpeech && HasVoiceEnergy(audioBuffer, audioBytes))
+                {
+                    _hasDetectedCommandSpeech = true;
+                    _lastVoiceTimeUtc = nowUtc;
+                }
+                else if (_hasDetectedCommandSpeech && HasVoiceEnergy(audioBuffer, audioBytes))
+                {
+                    _lastVoiceTimeUtc = nowUtc;
+                }
             }
 
             if (isSuppressed)
