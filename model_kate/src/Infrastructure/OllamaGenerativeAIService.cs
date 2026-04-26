@@ -271,7 +271,6 @@ namespace model_kate.Infrastructure
             var capBlock = needsCapabilities ? _capabilitiesBlock : string.Empty;
             var effectiveSystemPrompt = (isTechnicalPrompt ? TechnicalSystemPrompt : PortugueseSystemPrompt) + capBlock;
             effectiveSystemPrompt += BuildAllowedTopicsSystemBlock();
-            effectiveSystemPrompt += BuildAllowedTopicsSystemBlock();
 
             var userFacts = BuildUserFactsBlock();
             if (!string.IsNullOrWhiteSpace(userFacts))
@@ -493,6 +492,7 @@ namespace model_kate.Infrastructure
 
             var capBlock = needsCapabilities ? _capabilitiesBlock : string.Empty;
             var effectiveSystemPrompt = (isTechnicalPrompt ? TechnicalSystemPrompt : PortugueseSystemPrompt) + capBlock;
+            effectiveSystemPrompt += BuildAllowedTopicsSystemBlock();
 
             var userFacts = BuildUserFactsBlock();
             if (!string.IsNullOrWhiteSpace(userFacts))
