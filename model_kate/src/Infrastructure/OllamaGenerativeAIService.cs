@@ -67,7 +67,7 @@ namespace model_kate.Infrastructure
         private readonly string _memoryFilePath;
         private readonly Queue<ConversationTurn> _conversationHistory = new();
         private readonly object _conversationSync = new();
-        private static readonly HttpClient _httpClient = new HttpClient();
+        private static readonly HttpClient _httpClient = new HttpClient { Timeout = TimeSpan.FromMinutes(5) };
         private readonly IWebBrowsingService _webBrowsing;
         private readonly ICodeExecutionService _codeExecution;
         private readonly IKateDatabaseService _db;
@@ -258,26 +258,29 @@ namespace model_kate.Infrastructure
             var isTechnicalPrompt = webAction == WebAction.None && LooksTechnical(normalizedPrompt);
             var needsCapabilities = LooksAboutCapabilities(normalizedPrompt);
 
-            string effectivePrompt;
-            string effectiveSystemPrompt;
             var capBlock = needsCapabilities ? _capabilitiesBlock : string.Empty;
+            var effectiveSystemPrompt = (isTechnicalPrompt ? TechnicalSystemPrompt : PortugueseSystemPrompt) + capBlock;
 
+            var userFacts = BuildUserFactsBlock();
+            if (!string.IsNullOrWhiteSpace(userFacts))
+                effectiveSystemPrompt += "\n\n" + userFacts;
+
+            string userMessageForChat;
             if (webContext != null)
             {
-                effectivePrompt = BuildWebContextPrompt(normalizedPrompt, webContext, conversationHistory);
+                userMessageForChat = $"Resultados obtidos da internet agora:\n{webContext}\n\nPergunta: {normalizedPrompt}";
                 effectiveSystemPrompt = PortugueseSystemPrompt + capBlock;
+                if (!string.IsNullOrWhiteSpace(userFacts))
+                    effectiveSystemPrompt += "\n\n" + userFacts;
             }
             else
             {
-                effectivePrompt = isTechnicalPrompt
-                    ? BuildTechnicalPrompt(normalizedPrompt, conversationHistory)
-                    : BuildPortuguesePrompt(normalizedPrompt, conversationHistory);
-                effectiveSystemPrompt = (isTechnicalPrompt ? TechnicalSystemPrompt : PortugueseSystemPrompt) + capBlock;
+                userMessageForChat = normalizedPrompt;
             }
 
             LogFile.AppendLine($"[Ollama] Enviando prompt: {normalizedPrompt}");
             LogFile.AppendLine($"[Ollama] Modo de resposta: {(webContext != null ? "web" : isTechnicalPrompt ? "tecnico" : "geral")} | capacidades: {needsCapabilities}");
-            var finalResponse = ExecuteGenerate(effectivePrompt, effectiveSystemPrompt);
+            var finalResponse = ExecuteGenerateChatAsync(userMessageForChat, conversationHistory, effectiveSystemPrompt, onToken: null).GetAwaiter().GetResult();
 
             RegisterConversationTurn(normalizedPrompt, finalResponse);
             LogFile.AppendLine($"[Ollama] Resposta final extraída: {finalResponse}");
@@ -407,24 +410,27 @@ namespace model_kate.Infrastructure
             var isTechnicalPrompt = webAction == WebAction.None && LooksTechnical(normalizedPrompt);
             var needsCapabilities = LooksAboutCapabilities(normalizedPrompt);
 
-            string effectivePrompt;
-            string effectiveSystemPrompt;
             var capBlock = needsCapabilities ? _capabilitiesBlock : string.Empty;
+            var effectiveSystemPrompt = (isTechnicalPrompt ? TechnicalSystemPrompt : PortugueseSystemPrompt) + capBlock;
 
+            var userFacts = BuildUserFactsBlock();
+            if (!string.IsNullOrWhiteSpace(userFacts))
+                effectiveSystemPrompt += "\n\n" + userFacts;
+
+            string userMessageForChat;
             if (webContext != null)
             {
-                effectivePrompt = BuildWebContextPrompt(normalizedPrompt, webContext, conversationHistory);
+                userMessageForChat = $"Resultados obtidos da internet agora:\n{webContext}\n\nPergunta: {normalizedPrompt}";
                 effectiveSystemPrompt = PortugueseSystemPrompt + capBlock;
+                if (!string.IsNullOrWhiteSpace(userFacts))
+                    effectiveSystemPrompt += "\n\n" + userFacts;
             }
             else
             {
-                effectivePrompt = isTechnicalPrompt
-                    ? BuildTechnicalPrompt(normalizedPrompt, conversationHistory)
-                    : BuildPortuguesePrompt(normalizedPrompt, conversationHistory);
-                effectiveSystemPrompt = (isTechnicalPrompt ? TechnicalSystemPrompt : PortugueseSystemPrompt) + capBlock;
+                userMessageForChat = normalizedPrompt;
             }
 
-            var finalResponse = await ExecuteGenerateAsync(effectivePrompt, effectiveSystemPrompt, onToken, cancellationToken);
+            var finalResponse = await ExecuteGenerateChatAsync(userMessageForChat, conversationHistory, effectiveSystemPrompt, onToken, cancellationToken);
             RegisterConversationTurn(normalizedPrompt, finalResponse);
             LogFile.AppendLine($"[Ollama] Resposta streaming concluída. Tamanho: {finalResponse.Length} | capacidades: {needsCapabilities}");
             return finalResponse;
@@ -475,6 +481,90 @@ namespace model_kate.Infrastructure
                 if (root.TryGetProperty("response", out var tokenEl))
                 {
                     var token = tokenEl.GetString() ?? string.Empty;
+                    if (!string.IsNullOrEmpty(token))
+                    {
+                        sb.Append(token);
+                        onToken?.Invoke(token);
+                    }
+                }
+
+                if (root.TryGetProperty("done", out var doneEl) && doneEl.GetBoolean())
+                    break;
+            }
+
+            return sb.Length > 0 ? sb.ToString() : "[Erro na resposta da IA]";
+        }
+
+        /// <summary>
+        /// Envia mensagens para o endpoint /api/chat do Ollama (formato nativo de chat).
+        /// Produz respostas mais naturais que /api/generate pois os modelos são treinados no formato role/content.
+        /// </summary>
+        private async Task<string> ExecuteGenerateChatAsync(
+            string userMessage,
+            IReadOnlyCollection<ConversationTurn>? history,
+            string systemPrompt,
+            Action<string>? onToken,
+            CancellationToken cancellationToken = default)
+        {
+            var numThread = Environment.GetEnvironmentVariable("KATE_CPU_THREADS") is { Length: > 0 } t
+                && int.TryParse(t, out var parsedThreads) ? parsedThreads : Environment.ProcessorCount;
+            var numGpu = Environment.GetEnvironmentVariable("KATE_GPU_LAYERS") is { Length: > 0 } g
+                && int.TryParse(g, out var parsedGpu) ? parsedGpu : -1;
+
+            var messages = new List<object>();
+
+            if (!string.IsNullOrWhiteSpace(systemPrompt))
+                messages.Add(new { role = "system", content = systemPrompt });
+
+            if (history != null)
+            {
+                foreach (var turn in history)
+                {
+                    messages.Add(new { role = "user", content = turn.UserPrompt });
+                    messages.Add(new { role = "assistant", content = turn.AssistantResponse });
+                }
+            }
+
+            messages.Add(new { role = "user", content = userMessage });
+
+            var requestBody = new
+            {
+                model = _model,
+                messages,
+                stream = true,
+                options = new
+                {
+                    temperature = 0.25,
+                    top_p = 0.85,
+                    repeat_penalty = 1.18,
+                    num_predict = 600,
+                    num_ctx = 8192,
+                    num_thread = numThread,
+                    num_gpu = numGpu
+                }
+            };
+
+            var content = new StringContent(JsonSerializer.Serialize(requestBody), Encoding.UTF8, "application/json");
+            using var request = new HttpRequestMessage(HttpMethod.Post, _endpoint + "/api/chat") { Content = content };
+            using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            response.EnsureSuccessStatusCode();
+
+            var sb = new StringBuilder();
+            using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+            using var reader = new System.IO.StreamReader(stream);
+
+            string? line;
+            while ((line = await reader.ReadLineAsync(cancellationToken)) != null)
+            {
+                if (string.IsNullOrWhiteSpace(line)) continue;
+
+                using var doc = JsonDocument.Parse(line);
+                var root = doc.RootElement;
+
+                if (root.TryGetProperty("message", out var messageEl) &&
+                    messageEl.TryGetProperty("content", out var contentEl))
+                {
+                    var token = contentEl.GetString() ?? string.Empty;
                     if (!string.IsNullOrEmpty(token))
                     {
                         sb.Append(token);
@@ -597,8 +687,7 @@ namespace model_kate.Infrastructure
             LogFile.AppendLine($"[Code] Intenção de código detectada: {intent}");
 
             var conversationHistory = SnapshotConversationHistory();
-            var codePrompt = BuildCodePrompt(userPrompt, conversationHistory);
-            var rawResponse = ExecuteGenerate(codePrompt, CodeSystemPrompt);
+            var rawResponse = await ExecuteGenerateChatAsync(userPrompt, conversationHistory, CodeSystemPrompt, onToken: null);
 
             if (intent == CodeIntent.Write)
             {
