@@ -90,7 +90,7 @@ namespace model_kate.Infrastructure
             (new System.Text.RegularExpressions.Regex(@"tenho (\d+) anos", System.Text.RegularExpressions.RegexOptions.IgnoreCase), "idade"),
         ];
 
-        public OllamaGenerativeAIService(string endpoint = "http://localhost:11434", string model = "llama3.2:3b")
+        public OllamaGenerativeAIService(string endpoint = "http://localhost:11434", string model = "kate")
         {
             _endpoint = endpoint;
             _model = Environment.GetEnvironmentVariable("KATE_OLLAMA_MODEL")?.Trim() is { Length: > 0 } configuredModel
