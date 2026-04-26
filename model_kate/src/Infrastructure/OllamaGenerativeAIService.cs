@@ -60,6 +60,32 @@ namespace model_kate.Infrastructure
             "prompt", "llm", "modelo", "whisper", "vosk", "ollama", "pipeline", "arquitetura"
         };
 
+        private static readonly HashSet<string> StopWords = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "a", "o", "as", "os", "um", "uma", "uns", "umas", "de", "do", "da", "dos", "das",
+            "e", "ou", "que", "para", "por", "com", "sem", "no", "na", "nos", "nas", "em", "ao", "aos",
+            "eu", "voce", "voces", "me", "te", "se", "isso", "isto", "aquele", "aquela", "quero", "preciso"
+        };
+
+        private static readonly Dictionary<string, string[]> SemanticSynonyms = new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["programacao"] = ["codigo", "codar", "desenvolvimento", "software"],
+            ["codigo"] = ["programacao", "script", "fonte", "implementacao"],
+            ["arquivo"] = ["documento", "txt", "md", "json", "cs"],
+            ["editar"] = ["modificar", "alterar", "ajustar", "refatorar"],
+            ["criar"] = ["gerar", "fazer", "montar", "produzir"],
+            ["ler"] = ["abrir", "exibir", "mostrar", "inspecionar"],
+            ["dotnet"] = ["csharp", "c#", "aspnet", "wpf"],
+            ["csharp"] = ["c#", "dotnet"],
+            ["wpf"] = ["xaml", "interface", "desktop"],
+            ["ollama"] = ["llm", "modelo", "inferência", "inferencia"],
+            ["vosk"] = ["stt", "transcricao", "transcrição", "voz"],
+            ["whisper"] = ["transcricao", "transcrição", "stt", "audio"],
+            ["piper"] = ["tts", "fala", "sintese", "síntese", "voz"]
+        };
+
+        private const double AllowedTopicSimilarityThreshold = 0.34;
+
         private sealed record ConversationTurn(string UserPrompt, string AssistantResponse);
 
         private readonly string _endpoint;
@@ -211,6 +237,15 @@ namespace model_kate.Infrastructure
                 RegisterConversationTurn(normalizedPrompt, localAnswer);
                 LogFile.AppendLine($"[Ollama] Resposta local direta aplicada: {localAnswer}");
                 return localAnswer;
+            }
+
+            var fsIntent = _fileSystem.DetectIntent(normalizedPrompt);
+            if (fsIntent.Action != FileSystemAction.None)
+            {
+                LogFile.AppendLine($"[FS] Intenção detectada (sync): {fsIntent.Action} -> {fsIntent.Path}");
+                var fsResult = _fileSystem.ExecuteAsync(fsIntent, normalizedPrompt).GetAwaiter().GetResult();
+                RegisterConversationTurn(normalizedPrompt, fsResult);
+                return fsResult;
             }
 
             if (!IsPromptAllowed(normalizedPrompt, out var policyFeedback))
@@ -382,6 +417,15 @@ namespace model_kate.Infrastructure
             }
 
             var normalizedPrompt = RemoveDiacritics(prompt).ToLowerInvariant();
+            var promptVector = BuildSemanticVector(normalizedPrompt);
+            if (promptVector.Count == 0)
+            {
+                feedback = "Não consegui identificar o tema da sua pergunta. Reformule de forma objetiva.";
+                return false;
+            }
+
+            var bestTopic = string.Empty;
+            var bestScore = 0d;
             foreach (var topic in _allowedTopics)
             {
                 var normalizedTopic = RemoveDiacritics(topic).ToLowerInvariant();
@@ -390,10 +434,78 @@ namespace model_kate.Infrastructure
                     feedback = string.Empty;
                     return true;
                 }
+
+                var topicVector = BuildSemanticVector(normalizedTopic);
+                var score = ComputeCosineSimilarity(promptVector, topicVector);
+                if (score > bestScore)
+                {
+                    bestScore = score;
+                    bestTopic = topic;
+                }
             }
 
-            feedback = "Esse assunto ainda nao esta liberado para mim. Libere o topico em kate_allowed_topics.txt e eu respondo.";
+            if (bestScore >= AllowedTopicSimilarityThreshold)
+            {
+                feedback = string.Empty;
+                return true;
+            }
+
+            feedback = $"Esse assunto ainda nao esta liberado para mim. Tema mais proximo: '{bestTopic}' (similaridade {bestScore:0.00}). Libere o topico em kate_allowed_topics.txt e eu respondo.";
             return false;
+        }
+
+        private static Dictionary<string, double> BuildSemanticVector(string text)
+        {
+            var tokens = Tokenize(text);
+            var vector = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var token in tokens)
+            {
+                AddWeight(vector, token, 1.0);
+                if (SemanticSynonyms.TryGetValue(token, out var synonyms))
+                {
+                    foreach (var syn in synonyms)
+                        AddWeight(vector, syn, 0.65);
+                }
+            }
+
+            return vector;
+        }
+
+        private static string[] Tokenize(string text)
+        {
+            return Regex.Matches(text, @"\b[\p{L}\p{N}#.+-]{2,}\b", RegexOptions.CultureInvariant)
+                .Select(m => m.Value.ToLowerInvariant())
+                .Where(t => !StopWords.Contains(t))
+                .ToArray();
+        }
+
+        private static void AddWeight(Dictionary<string, double> vector, string token, double weight)
+        {
+            if (vector.TryGetValue(token, out var current))
+                vector[token] = current + weight;
+            else
+                vector[token] = weight;
+        }
+
+        private static double ComputeCosineSimilarity(Dictionary<string, double> a, Dictionary<string, double> b)
+        {
+            if (a.Count == 0 || b.Count == 0)
+                return 0;
+
+            double dot = 0;
+            foreach (var (token, wA) in a)
+            {
+                if (b.TryGetValue(token, out var wB))
+                    dot += wA * wB;
+            }
+
+            double normA = Math.Sqrt(a.Values.Sum(v => v * v));
+            double normB = Math.Sqrt(b.Values.Sum(v => v * v));
+            if (normA == 0 || normB == 0)
+                return 0;
+
+            return dot / (normA * normB);
         }
 
         public async Task<string> GenerateResponseAsync(string prompt, Action<string>? onToken = null, CancellationToken cancellationToken = default)

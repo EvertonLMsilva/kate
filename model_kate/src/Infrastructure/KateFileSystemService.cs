@@ -69,6 +69,14 @@ namespace model_kate.Infrastructure
             @"(?:adicione?|acrescente?|inclua?|insira?)\s+(?:no\s+arquivo|ao\s+arquivo|no\s+final\s+do\s+arquivo)\s+[""']?(?<name>[\w\s.\-]+?)[""']?\s*[:|,]?\s*(?<content>.+)?$",
             RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
+        private static readonly Regex OverwriteRegex = new(
+            @"(?:sobrescrev[ae]|substitu[ae]\s+todo\s+o\s+conte[uú]do\s+do\s+arquivo|reescrev[ae]|atualiz[ae]\s+o\s+arquivo)\s+[""']?(?<name>[\w\s.\-/\\:]+?)[""']?\s+(?:com|para)\s+[""']?(?<content>.+?)[""']?$",
+            RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+        private static readonly Regex ReplaceInFileRegex = new(
+            @"(?:substitu[ae]|troqu[ae]|alter[ae])\s+(?:no\s+arquivo\s+)?[""']?(?<name>[\w\s.\-/\\:]+?)[""']?\s+(?:de|o\s+trecho)\s+[""'](?<old>.+?)[""']\s+(?:para|por)\s+[""'](?<new>.+?)[""']\s*$",
+            RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
         private static readonly Regex ReadFileRegex = new(
             @"(?:l[êe]ia?|mostr[ae]|exib[ae]|abra?\s+e\s+l[êe]ia?)\s+(?:o\s+arquivo|a\s+arquivo|o\s+conte[uú]do\s+do)\s+[""']?(?<name>[\w\s.\-/\\:]+?)[""']?\s*$",
             RegexOptions.IgnoreCase | RegexOptions.Compiled);
@@ -103,6 +111,25 @@ namespace model_kate.Infrastructure
             m = SaveContentRegex.Match(lower);
             if (m.Success)
                 return new FileSystemIntent(FileSystemAction.CreateFile, ResolvePath(m.Groups["name"].Value.Trim()), null);
+
+            // Sobrescrever arquivo
+            m = OverwriteRegex.Match(lower);
+            if (m.Success)
+            {
+                var path = ResolvePath(m.Groups["name"].Value.Trim());
+                var content = m.Groups["content"].Value.Trim();
+                return new FileSystemIntent(FileSystemAction.OverwriteFile, path, content);
+            }
+
+            // Substituir trecho dentro de arquivo
+            m = ReplaceInFileRegex.Match(lower);
+            if (m.Success)
+            {
+                var path = ResolvePath(m.Groups["name"].Value.Trim());
+                var oldValue = m.Groups["old"].Value;
+                var newValue = m.Groups["new"].Value;
+                return new FileSystemIntent(FileSystemAction.ReplaceInFile, path, oldValue + "\n---\n" + newValue);
+            }
 
             // Adicionar a arquivo
             m = AppendRegex.Match(lower);
@@ -150,6 +177,8 @@ namespace model_kate.Infrastructure
                 {
                     FileSystemAction.CreateFile  => await CreateFileInternalAsync(intent.Path!, intent.Content),
                     FileSystemAction.AppendFile  => await AppendFileInternalAsync(intent.Path!, intent.Content ?? string.Empty),
+                    FileSystemAction.OverwriteFile => await OverwriteFileInternalAsync(intent.Path!, intent.Content ?? string.Empty),
+                    FileSystemAction.ReplaceInFile => await ReplaceInFileInternalAsync(intent.Path!, intent.Content ?? string.Empty),
                     FileSystemAction.ReadFile    => await ReadFileInternalAsync(intent.Path!),
                     FileSystemAction.ListDir     => await ListDirInternalAsync(intent.Path!),
                     FileSystemAction.DeleteFile  => await DeleteFileInternalAsync(intent.Path!),
@@ -188,8 +217,44 @@ namespace model_kate.Infrastructure
             return $"Conteúdo adicionado ao arquivo {Path.GetFileName(path)}.";
         }
 
+        private static async Task<string> OverwriteFileInternalAsync(string path, string content)
+        {
+            EnsureAllowedPath(path);
+            var dir = Path.GetDirectoryName(path);
+            if (!string.IsNullOrWhiteSpace(dir) && !Directory.Exists(dir))
+                Directory.CreateDirectory(dir);
+
+            await File.WriteAllTextAsync(path, content, System.Text.Encoding.UTF8);
+            LogFile.AppendLine($"[FS] Arquivo sobrescrito: {path}");
+            return $"Arquivo {Path.GetFileName(path)} atualizado com novo conteúdo.";
+        }
+
+        private static async Task<string> ReplaceInFileInternalAsync(string path, string payload)
+        {
+            EnsureAllowedPath(path);
+            if (!File.Exists(path))
+                return $"Arquivo não encontrado: {path}";
+
+            var split = payload.Split("\n---\n", 2, StringSplitOptions.None);
+            if (split.Length != 2)
+                return "Formato inválido para substituição. Use: substituir no arquivo X de \"A\" para \"B\".";
+
+            var oldValue = split[0];
+            var newValue = split[1];
+            var text = await File.ReadAllTextAsync(path, System.Text.Encoding.UTF8);
+
+            if (!text.Contains(oldValue, StringComparison.Ordinal))
+                return "Não encontrei o trecho informado para substituir.";
+
+            var updated = text.Replace(oldValue, newValue, StringComparison.Ordinal);
+            await File.WriteAllTextAsync(path, updated, System.Text.Encoding.UTF8);
+            LogFile.AppendLine($"[FS] Trecho substituído no arquivo: {path}");
+            return $"Trecho substituído em {Path.GetFileName(path)}.";
+        }
+
         private static async Task<string> ReadFileInternalAsync(string path)
         {
+            EnsureAllowedPath(path);
             if (!File.Exists(path))
                 return $"Arquivo não encontrado: {path}";
 
@@ -201,6 +266,7 @@ namespace model_kate.Infrastructure
 
         private static Task<string> ListDirInternalAsync(string path)
         {
+            EnsureAllowedPath(path);
             if (!Directory.Exists(path))
                 return Task.FromResult($"Pasta não encontrada: {path}");
 

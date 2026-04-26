@@ -4,6 +4,9 @@
 
 programacao csharp
 programacao dotnet
+arquivos
+manipulacao de arquivos
+edicao de arquivos
 wpf
 ollama
 vosk

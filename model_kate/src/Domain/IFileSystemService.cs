@@ -2,7 +2,19 @@ using System.Threading.Tasks;
 
 namespace model_kate.Domain
 {
-    public enum FileSystemAction { None, CreateFile, AppendFile, ReadFile, DeleteFile, ListDir, OpenProgram, OpenFile }
+    public enum FileSystemAction
+    {
+        None,
+        CreateFile,
+        AppendFile,
+        OverwriteFile,
+        ReplaceInFile,
+        ReadFile,
+        DeleteFile,
+        ListDir,
+        OpenProgram,
+        OpenFile
+    }
 
     public record FileSystemIntent(FileSystemAction Action, string? Path, string? Content);
 

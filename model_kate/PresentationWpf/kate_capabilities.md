@@ -30,6 +30,8 @@ Você consegue criar, editar, ler e excluir arquivos por comando de voz ou texto
 - **Criar arquivo**: "cria um arquivo chamado notas.txt com o conteúdo ..."
 - **Salvar conteúdo**: "salva isso no arquivo relatorio.txt"
 - **Adicionar conteúdo**: "adiciona no arquivo notas.txt: mais uma linha"
+- **Sobrescrever arquivo**: "sobrescreve notas.txt com ..."
+- **Substituir trecho**: "substitui no arquivo notas.txt de \"versao antiga\" para \"versao nova\""
 - **Ler arquivo**: "lê o arquivo notas.txt" / "mostra o conteúdo de config.json"
 - **Listar pasta**: "lista os arquivos da pasta documentos"
 - **Excluir arquivo**: "deleta o arquivo rascunho.txt"
@@ -71,6 +73,11 @@ Arquivos são salvos por padrão na Área de Trabalho. Escrita permitida apenas 
 - **Baixar novo modelo**: se o modelo pedido não estiver instalado, a Kate baixa automaticamente do Ollama.
 - Exemplos de modelos compatíveis: `llama3.2:3b`, `llama3.1:8b`, `mistral`, `deepseek-r1`, `gemma3`, `phi4`, `qwen2.5`
 - Após a troca, a Kate confirma o novo modelo e já usa ele nas próximas respostas.
+
+### 10. Escopo por tópicos liberados (allowlist semântica)
+- A Kate responde somente sobre tópicos liberados em `kate_allowed_topics.txt`.
+- O filtro usa aproximação semântica local (similaridade por tokens e sinônimos), não apenas texto idêntico.
+- Se a pergunta ficar fora do escopo, ela recusa e orienta a liberar o tópico.
 
 ---
 
