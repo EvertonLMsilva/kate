@@ -11,8 +11,8 @@ namespace model_kate.Voice
 {
     public class VoskWakeWordRecognitionService : IVoiceRecognitionService, IDisposable
     {
-        private const double CommandStartTimeoutSeconds = 5.0;
-        private const double CommandSilenceTimeoutSeconds = 3.0;
+        private const double CommandStartTimeoutSeconds = 8.0;
+        private const double CommandSilenceTimeoutSeconds = 1.5;
         private const float MicrophoneGain = 5.0f; // aumentado de 3.5 para 5.0
 
         /// <summary>
@@ -34,6 +34,7 @@ namespace model_kate.Voice
         private const int DialogueModeMinChars = 6; // evita ruidos curtos
         private DateTime _lastSuccessfulCommandUtc = DateTime.MinValue;
         private DateTime _dialogueModeUntilUtc = DateTime.MinValue;
+        private DateTime _commandEnergyIgnoreUntilUtc = DateTime.MinValue;
         private static readonly string[] DefaultWakeWords = { "kate", "keiti", "kayte" };
         private static readonly (string Pattern, string Replacement)[] CommandCorrections =
         {
@@ -41,7 +42,13 @@ namespace model_kate.Voice
             (@"\bqual e a ora\b", "qual e a hora"),
             (@"\bqual é a ora\b", "qual é a hora"),
             (@"\bora e\b", "hora e"),
-            (@"\bora é\b", "hora é")
+            (@"\bora é\b", "hora é"),
+            // Correções comuns de STT para comandos em inglês e nomes de app.
+            (@"\bspotfy\b", "spotify"),
+            (@"\bspotifi\b", "spotify"),
+            (@"\bspotfyy\b", "spotify"),
+            (@"\bspotyfy\b", "spotify"),
+            (@"\bspoti\b", "spotify")
         };
 
         public event Action<string>? OnTextRecognized;
@@ -78,9 +85,6 @@ namespace model_kate.Voice
         public event Action<string>? OnWakeWordDetected;
         public event Action<string>? OnCommandDetected;
         public event Action? OnCommandCanceled;
-        /// <summary>Disparado quando o usuário diz uma palavra de stop durante a narração.</summary>
-        public event Action? OnStopRequested;
-
         public VoskWakeWordRecognitionService(string wakeWordModelPath, string? commandModelPath = null)
         {
             Vosk.Vosk.SetLogLevel(0);
@@ -161,6 +165,9 @@ namespace model_kate.Voice
             _lastVoiceTimeUtc = nowUtc;
             _partialCommand = string.Empty;
             _latestPartial = string.Empty;
+            // Ignora energia de voz nos primeiros 400ms para evitar que o eco da wake word
+            // (ainda no buffer do microfone) seja contado como início de comando.
+            _commandEnergyIgnoreUntilUtc = nowUtc.AddMilliseconds(400);
             ClearCommandAudioBuffer();
             // reset será aplicado na próxima chamada de OnDataAvailable (thread de gravação)
         }
@@ -193,15 +200,26 @@ namespace model_kate.Voice
         /// Retorna true se o buffer PCM 16-bit contém energia de voz acima do limiar.
         /// Usado para detectar fala em inglês que o Vosk (modelo pt) não reconhece.
         /// </summary>
-        private static bool HasVoiceEnergy(byte[] buffer, int bytesRecorded, short threshold = 800)
+        private static bool HasVoiceEnergy(byte[] buffer, int bytesRecorded, short peakThreshold = 280, float averageThreshold = 0.013f)
         {
+            long sumAbs = 0;
+            var sampleCount = 0;
             for (var i = 0; i < bytesRecorded - 1; i += 2)
             {
                 var sample = Math.Abs((short)(buffer[i] | (buffer[i + 1] << 8)));
-                if (sample >= threshold)
+                sumAbs += sample;
+                sampleCount++;
+                if (sample >= peakThreshold)
                     return true;
             }
-            return false;
+
+            if (sampleCount == 0)
+                return false;
+
+            // RMS simplificado por média absoluta normalizada em PCM16.
+            var avg = (float)sumAbs / sampleCount;
+            var normalizedAvg = avg / short.MaxValue;
+            return normalizedAvg >= averageThreshold;
         }
 
         private static byte[] AmplifyBuffer(byte[] buffer, int bytesRecorded, float gain)
@@ -252,7 +270,9 @@ namespace model_kate.Voice
 
             // ── Verificação de locutor ─────────────────────────────────────
             // Rejeita áudio de outros locutores se perfil estiver registrado.
-            if (_speaker.IsEnrolled && !isSuppressed && audioBytes >= 3200)
+            // Durante a captura de comando, não bloqueia por speaker verification para evitar
+            // falso negativo logo após a wake word (sintoma: fica em "Aguardando comando...").
+            if (_speaker.IsEnrolled && !isSuppressed && !_listeningForCommand && audioBytes >= 3200)
             {
                 if (!_speaker.Verify(audioBuffer, audioBytes))
                 {
@@ -267,21 +287,24 @@ namespace model_kate.Voice
                 // Detecta presença de voz por energia RMS do PCM, independente do Vosk.
                 // Necessário para inglês: Vosk (modelo pt) não produz texto para inglês,
                 // mas o áudio existe e deve ser repassado ao Whisper.
-                if (!_hasDetectedCommandSpeech && HasVoiceEnergy(audioBuffer, audioBytes))
+                // Ignora energia nos primeiros 400ms para não capturar eco da wake word.
+                var energyAllowed = nowUtc >= _commandEnergyIgnoreUntilUtc;
+                if (energyAllowed)
                 {
-                    _hasDetectedCommandSpeech = true;
-                    _lastVoiceTimeUtc = nowUtc;
-                }
-                else if (_hasDetectedCommandSpeech && HasVoiceEnergy(audioBuffer, audioBytes))
-                {
-                    _lastVoiceTimeUtc = nowUtc;
+                    if (!_hasDetectedCommandSpeech && HasVoiceEnergy(audioBuffer, audioBytes))
+                    {
+                        _hasDetectedCommandSpeech = true;
+                        _lastVoiceTimeUtc = nowUtc;
+                    }
+                    else if (_hasDetectedCommandSpeech && HasVoiceEnergy(audioBuffer, audioBytes))
+                    {
+                        _lastVoiceTimeUtc = nowUtc;
+                    }
                 }
             }
 
             if (isSuppressed)
             {
-                // Mesmo suprimido (Kate narrando), verifica stop command em tempo real
-                TryDetectStopDuringSuppression(audioBuffer, audioBytes);
                 return;
             }
 
@@ -357,6 +380,15 @@ namespace model_kate.Voice
 
             if (!_hasDetectedCommandSpeech && (nowUtc - _commandListeningStartedUtc).TotalSeconds >= CommandStartTimeoutSeconds)
             {
+                var bufferedAudio = TakeCommandAudioSnapshot();
+                if (bufferedAudio.Length >= 12_000)
+                {
+                    AppendVoiceLog("[Voice] Timeout inicial sem texto Vosk. Tentando transcricao por Whisper com audio bruto.");
+                    EmitCommand(string.Empty, bufferedAudio);
+                    return;
+                }
+
+                AppendVoiceLog("[Voice] Escuta cancelada por timeout inicial (sem deteccao de fala). ");
                 CancelCommandListening();
                 return;
             }
@@ -395,10 +427,10 @@ namespace model_kate.Voice
             return CleanCommandCandidate(candidate);
         }
 
-        private void EmitCommand(string commandText)
+        private void EmitCommand(string commandText, byte[]? capturedAudio = null)
         {
             var command = commandText.Trim();
-            var commandAudio = TakeCommandAudioSnapshot();
+            var commandAudio = capturedAudio ?? TakeCommandAudioSnapshot();
             ResetCommandState();
             SwitchToWakeRecognizer();
             if (!string.IsNullOrWhiteSpace(command))
@@ -416,6 +448,25 @@ namespace model_kate.Voice
                     _lastSuccessfulCommandUtc = DateTime.UtcNow;
                     AppendVoiceLog($"[Voice] Comando emitido: {finalCommand}");
                     OnCommandDetected?.Invoke(finalCommand);
+                });
+            }
+            else
+            {
+                _ = Task.Run(async () =>
+                {
+                    // Fallback: mesmo sem texto do Vosk, tenta transcrever o áudio bruto no Whisper.
+                    var whisperOnlyCommand = await ResolveCommandTextAsync(string.Empty, commandAudio).ConfigureAwait(false);
+                    if (!string.IsNullOrWhiteSpace(whisperOnlyCommand))
+                    {
+                        _lastSuccessfulCommandUtc = DateTime.UtcNow;
+                        AppendVoiceLog($"[Voice] Comando emitido via fallback Whisper: {whisperOnlyCommand}");
+                        OnCommandDetected?.Invoke(whisperOnlyCommand);
+                        return;
+                    }
+
+                    // Nenhum texto capturado após a wake word — reseta UI para aguardar próxima ativação
+                    AppendVoiceLog("[Voice] Comando vazio: nenhum texto detectado apos wake word");
+                    OnCommandCanceled?.Invoke();
                 });
             }
             // reset pendente já setado por SwitchToWakeRecognizer()
@@ -451,32 +502,6 @@ namespace model_kate.Voice
             else
                 _recognizer = _wakeRecognizer;
             _pendingReset = true; // aplicado na thread de gravação
-        }
-
-        private static readonly string[] StopKeywords =
-            ["para", "stop", "cancela", "cala", "silencio", "chega", "pare", "parar"];
-
-        /// <summary>
-        /// Processa áudio mesmo durante supressão (enquanto Kate narra) para detectar
-        /// palavras de parada em tempo real. Usa o reconhecedor de wake word (já ativo).
-        /// </summary>
-        private void TryDetectStopDuringSuppression(byte[] audioBuffer, int audioBytes)
-        {
-            if (_wakeRecognizer is null) return;
-
-            bool accepted = _wakeRecognizer.AcceptWaveform(audioBuffer, audioBytes);
-            string voskOut = accepted ? _wakeRecognizer.Result() : _wakeRecognizer.PartialResult();
-
-            var text = accepted ? ExtractText(voskOut) : ExtractPartial(voskOut);
-            if (string.IsNullOrWhiteSpace(text)) return;
-
-            var normalized = NormalizeText(text);
-            if (Array.Exists(StopKeywords, kw => normalized.Contains(kw, StringComparison.Ordinal)))
-            {
-                AppendVoiceLog($"[Voice] Stop detectado durante narração: \"{text}\"");
-                _wakeRecognizer.Reset();
-                OnStopRequested?.Invoke();
-            }
         }
 
         private bool EnsureCommandRecognizer()
@@ -843,11 +868,22 @@ namespace model_kate.Voice
                     return voskCommand;
                 }
 
+                // Se o Vosk já capturou texto realmente longo, pode usar direto para reduzir latência.
+                // Para comandos curtos/medios, priorizamos Whisper porque é mais preciso.
+                if (voskCommand.Trim().Length >= 60)
+                {
+                    AppendVoiceLog($"[Voice] Usando Vosk diretamente (texto suficiente: {voskCommand.Length} chars)");
+                    return voskCommand;
+                }
+
                 try
                 {
-                    var whisperCommand = await _commandTranscriber.TranscribeAsync(commandAudio).ConfigureAwait(false);
+                    // Timeout de 15s para evitar que Whisper trave indefinidamente
+                    using var timeoutCts = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(15));
+                    var whisperCommand = await _commandTranscriber.TranscribeAsync(commandAudio, timeoutCts.Token).ConfigureAwait(false);
                     if (string.IsNullOrWhiteSpace(whisperCommand))
                     {
+                        AppendVoiceLog("[Voice] Whisper retornou vazio. Usando Vosk.");
                         return voskCommand;
                     }
 
@@ -859,6 +895,11 @@ namespace model_kate.Voice
 
                     AppendVoiceLog($"[Voice] Comando refinado por Whisper local: {cleanedWhisperCommand}");
                     return cleanedWhisperCommand;
+                }
+                catch (OperationCanceledException)
+                {
+                    AppendVoiceLog("[Voice] Whisper excedeu timeout (15s). Usando Vosk.");
+                    return voskCommand;
                 }
                 catch (Exception ex)
                 {

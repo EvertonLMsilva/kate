@@ -39,10 +39,6 @@
 
 		private CancellationTokenSource _promptCts = new();
 
-		// Palavras que acionam o cancelamento imediato da resposta em curso
-		private static readonly string[] StopCommands =
-			["para", "stop", "cancela", "cala boca", "silêncio", "silencio", "chega", "pare"];
-
 		// Waveform
 		private readonly List<Rectangle> _waveformBars = new();
 		private readonly List<SolidColorBrush> _waveformBrushes = new();
@@ -214,23 +210,6 @@
 				{
 					if (_isClosing) return;
 
-					// Detecta comando de stop — cancela o que estiver em execução
-					var cmd = command?.Trim() ?? string.Empty;
-					if (IsStopCommand(cmd))
-					{
-						CancelCurrentPrompt();
-						await PostToUiAsync(() =>
-						{
-							ResponseTextBox.Text = string.Empty;
-							CommandTextBox.Text = string.Empty;
-							PromptTextBox.Text = string.Empty;
-							_waveformStateInt = 0;
-							SetAIVisualState(AIVisualState.Idle);
-							SetListeningState(false, "Pronta. Aguardando comando.");
-						});
-						return;
-					}
-
 					await PostToUiAsync(() =>
 					{
 						CommandTextBox.Text = command;
@@ -242,20 +221,6 @@
 					{
 						if (t.IsFaulted) System.IO.File.AppendAllText("erro_kate.txt", $"[Voice] RunPromptAsync erro: {t.Exception}\n");
 					}, TaskContinuationOptions.OnlyOnFaulted);
-				};
-				_voiceService.OnStopRequested += () =>
-				{
-					if (_isClosing) return;
-					CancelCurrentPrompt();
-					PostToUi(() =>
-					{
-						ResponseTextBox.Text = string.Empty;
-						CommandTextBox.Text = string.Empty;
-						PromptTextBox.Text = string.Empty;
-						_waveformStateInt = 0;
-						SetAIVisualState(AIVisualState.Idle);
-						SetListeningState(false, "Pronta. Aguardando comando.");
-					});
 				};
 				_voiceService.Start();
 				await PostToUiAsync(() => SetListeningState(false, "Aguardando palavra de ativação"));
@@ -421,12 +386,6 @@
 			}
 			catch { }
 			base.OnClosed(e);
-		}
-
-		private static bool IsStopCommand(string text)
-		{
-			var lower = text.ToLowerInvariant().Trim();
-			return Array.Exists(StopCommands, s => lower == s || lower.StartsWith(s + " ", StringComparison.Ordinal));
 		}
 
 		private void CancelCurrentPrompt()
@@ -698,18 +657,28 @@
 				return "Não consegui gerar uma resposta.";
 			}
 
+			var normalized = rawResponse;
+
+			// Remove blocos KATE_ACTION se acaso escaparem
+			normalized = System.Text.RegularExpressions.Regex.Replace(
+				normalized,
+				@"<KATE_ACTION>.*?</KATE_ACTION>",
+				"",
+				System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Singleline);
+
 			// Remove blocos de código para o TTS não ler caracteres de programação
-			var withoutCode = System.Text.RegularExpressions.Regex.Replace(
-				rawResponse,
+			normalized = System.Text.RegularExpressions.Regex.Replace(
+				normalized,
 				@"```[\s\S]*?```",
 				"[código gerado]",
 				System.Text.RegularExpressions.RegexOptions.IgnoreCase);
 
 			// Remove negrito/itálico markdown
-			withoutCode = System.Text.RegularExpressions.Regex.Replace(withoutCode, @"\*{1,3}([^*]+)\*{1,3}", "$1");
+			normalized = System.Text.RegularExpressions.Regex.Replace(normalized, @"\*{1,3}([^*]+)\*{1,3}", "$1");
 
-			var normalized = withoutCode.Replace("\r\n", "\n").Replace("\r", "\n");
 			var lines = normalized
+				.Replace("\r\n", "\n")
+				.Replace("\r", "\n")
 				.Split('\n', StringSplitOptions.RemoveEmptyEntries)
 				.Select(line => line.Trim())
 				.Where(line => line.Length > 0);

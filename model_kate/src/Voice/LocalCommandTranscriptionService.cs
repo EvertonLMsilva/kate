@@ -138,7 +138,7 @@ namespace model_kate.Voice
             {
                 "-m", Quote(_modelPath),
                 "-f", Quote(waveFilePath),
-                "-l", "auto",
+                "-l", "pt",
                 "-nt",
                 "-np",
                 "-of", Quote(outputBasePath),
@@ -149,7 +149,7 @@ namespace model_kate.Voice
             {
                 "--model", Quote(_modelPath),
                 "--file", Quote(waveFilePath),
-                "--language", "auto",
+                "--language", "pt",
                 "--no-timestamps",
                 "--output-txt",
                 "--output-file", Quote(outputBasePath)
@@ -277,11 +277,13 @@ namespace model_kate.Voice
         {
             var fileName = Path.GetFileName(modelPath).ToLowerInvariant();
             var score = 0;
-            if (fileName.Contains("small"))
+
+            // Prefere base (rápido) > small (lento) > medium (muito lento)
+            if (fileName.Contains("base"))
             {
-                score += 30;
+                score += 40;
             }
-            else if (fileName.Contains("base"))
+            else if (fileName.Contains("small"))
             {
                 score += 20;
             }

@@ -1,4 +1,4 @@
-using System.Net.Http;
+﻿using System.Net.Http;
 using System.Text.RegularExpressions;
 using System.Text;
 using System.Text.Json;
@@ -15,7 +15,7 @@ namespace model_kate.Infrastructure
 {
     public class OllamaGenerativeAIService : IGenerativeAIService
     {
-        private const int MaxConversationTurns = 12;   // turnos ativos no contexto
+        private const int MaxConversationTurns = 8;   // turnos ativos no contexto
         private const int MaxPersistedTurns = 100;      // turnos salvos no DB/JSON
         private const string PortugueseSystemPrompt = """
             Voce e a Kate, IA assistente pessoal criada por Everton.
@@ -34,6 +34,7 @@ namespace model_kate.Infrastructure
             - Para perguntas ambiguas, responda com a interpretacao mais provavel sem pedir confirmacao.
             - Quando o usuario errar algo, corrija de forma direta e breve, sem julgamento.
             - Quando perguntada sobre o que voce sabe fazer, quais sao suas capacidades ou se recebeu algum upgrade: use EXCLUSIVAMENTE o bloco de capacidades abaixo para responder. Nao invente, nao omita.
+            - Entenda comandos em portugues e ingles. Se o usuario escrever em ingles, interprete normalmente e responda em portugues, a menos que ele peca resposta em ingles.
             """;
 
         private const string TechnicalSystemPrompt = """
@@ -85,6 +86,52 @@ namespace model_kate.Infrastructure
         };
 
         private const double AllowedTopicSimilarityThreshold = 0.34;
+
+
+        // â”€â”€ Protocolo de acoes LLM (KATE_ACTION) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        private static readonly Regex KateActionBlockRegex = new(
+            @"<KATE_ACTION>(?<json>[^<]+)</KATE_ACTION>",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        // Detecta pedidos vagos de terminal que nao casam com TerminalCommandRegex mas devem ir pro LLM
+        private static readonly Regex TerminalIntentRegex = new(
+            @"\b(?:terminal|powershell|cmd|shell|linha\s+de\s+comando|execute|executar|roda|rodar|use\s+o\s+comando|execut[ae].*comando|roda.*terminal|execut[ae].*terminal|por\s+ch[aã]o|rodei|digitei)\b",
+            RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+        private const string KateActionProtocolPrompt = """
+
+
+            PROTOCOLO DE ACOES (OBRIGATORIO - NAO IGNORE ESTE BLOCO):
+            Quando o usuario pedir para executar algo no PC (abrir programa, rodar comando, criar/ler arquivo, etc.),
+            VOCE DEVE OBRIGATORIAMENTE incluir um bloco de acao na sua resposta, no formato exato:
+            <KATE_ACTION>{"type":"TIPO","target":"ALVO","content":"CONTEUDO"}</KATE_ACTION>
+
+            Tipos disponiveis:
+            - open_program  -> target = nome do programa (ex: spotify, chrome, notepad, vscode, discord)
+            - open_file     -> target = caminho ou nome do arquivo
+            - terminal      -> content = comando powershell a executar (ex: ipconfig, Get-Date, git status)
+            - create_file   -> target = nome do arquivo, content = conteudo a gravar
+            - append_file   -> target = nome do arquivo, content = conteudo a adicionar
+            - read_file     -> target = nome do arquivo
+            - list_dir      -> target = pasta (opcional, padrao = Desktop)
+            - delete_file   -> target = nome do arquivo
+
+            REGRAS CRITICAS:
+            - SEMPRE emita <KATE_ACTION> quando o usuario pede para executar/rodar/usar algo.
+            - NUNCA substitua o bloco por texto explicativo. Execute, nao explique.
+            - Para terminal: se o usuario nao especificou o comando exato mas quer executar algo no terminal,
+              escolha o comando PowerShell mais adequado com base no contexto. Se ainda assim nao for claro,
+              use: <KATE_ACTION>{"type":"terminal","target":"","content":"Write-Host 'Nao entendi o comando. Diga exatamente o que executar.'"}</KATE_ACTION>
+            - Omita campos que nao se aplicam (coloque "").
+            - Depois do bloco, adicione UMA frase curta confirmando o que fez.
+            - Nunca explique o JSON para o usuario. Ele e processado automaticamente.
+
+            Exemplos corretos:
+            Usuario: "roda o git status no terminal" -> <KATE_ACTION>{"type":"terminal","target":"","content":"git status"}</KATE_ACTION> Executando git status.
+            Usuario: "use o npm install no terminal" -> <KATE_ACTION>{"type":"terminal","target":"","content":"npm install"}</KATE_ACTION> Rodando npm install.
+            Usuario: "execute o ipconfig" -> <KATE_ACTION>{"type":"terminal","target":"","content":"ipconfig"}</KATE_ACTION> Executando ipconfig.
+            Usuario: "abre o spotify" -> <KATE_ACTION>{"type":"open_program","target":"spotify","content":""}</KATE_ACTION> Abrindo o Spotify.
+            """;
 
         private sealed record ConversationTurn(string UserPrompt, string AssistantResponse);
 
@@ -302,6 +349,9 @@ namespace model_kate.Infrastructure
             var conversationHistory = SnapshotConversationHistory();
             var isTechnicalPrompt = webAction == WebAction.None && LooksTechnical(normalizedPrompt);
             var needsCapabilities = LooksAboutCapabilities(normalizedPrompt);
+            
+            // Detecta intenção de terminal para fallback
+            var hasTerminalIntent = TerminalIntentRegex.IsMatch(normalizedPrompt);
 
             var capBlock = needsCapabilities ? _capabilitiesBlock : string.Empty;
             var effectiveSystemPrompt = (isTechnicalPrompt ? TechnicalSystemPrompt : PortugueseSystemPrompt) + capBlock;
@@ -323,11 +373,19 @@ namespace model_kate.Infrastructure
             else
             {
                 userMessageForChat = normalizedPrompt;
+                // Se o usuario menciona terminal mas nao especificou o comando exato, lembra o LLM de usar KATE_ACTION
+                if (hasTerminalIntent)
+                {
+                    userMessageForChat += "\n\n[SISTEMA: O usuario quer executar algo no terminal/PowerShell. Obrigatoriamente emita KATE_ACTION type=terminal com o comando adequado. NAO explique — execute.]"; 
+                    LogFile.AppendLine("[FS] Intenção de terminal detectada — hint injetado na mensagem do usuario");
+                }
             }
 
             LogFile.AppendLine($"[Ollama] Enviando prompt: {normalizedPrompt}");
             LogFile.AppendLine($"[Ollama] Modo de resposta: {(webContext != null ? "web" : isTechnicalPrompt ? "tecnico" : "geral")} | capacidades: {needsCapabilities}");
-            var finalResponse = ExecuteGenerateChatAsync(userMessageForChat, conversationHistory, effectiveSystemPrompt, onToken: null).GetAwaiter().GetResult();
+            effectiveSystemPrompt += KateActionProtocolPrompt;
+            var rawLlmResponse = ExecuteGenerateChatWithModelFallbackAsync(userMessageForChat, conversationHistory, effectiveSystemPrompt, onToken: null, cancellationToken: default).GetAwaiter().GetResult();
+            var finalResponse = ExecuteKateActionsAsync(rawLlmResponse, hasTerminalIntent).GetAwaiter().GetResult();
 
             RegisterConversationTurn(normalizedPrompt, finalResponse);
             LogFile.AppendLine($"[Ollama] Resposta final extraída: {finalResponse}");
@@ -601,6 +659,9 @@ namespace model_kate.Infrastructure
             var conversationHistory = SnapshotConversationHistory();
             var isTechnicalPrompt = webAction == WebAction.None && LooksTechnical(normalizedPrompt);
             var needsCapabilities = LooksAboutCapabilities(normalizedPrompt);
+            
+            // Detecta intenção de terminal para fallback
+            var hasTerminalIntent = TerminalIntentRegex.IsMatch(normalizedPrompt);
 
             var capBlock = needsCapabilities ? _capabilitiesBlock : string.Empty;
             var effectiveSystemPrompt = (isTechnicalPrompt ? TechnicalSystemPrompt : PortugueseSystemPrompt) + capBlock;
@@ -622,12 +683,137 @@ namespace model_kate.Infrastructure
             else
             {
                 userMessageForChat = normalizedPrompt;
+                // Se o usuario menciona terminal mas nao especificou o comando exato, lembra o LLM de usar KATE_ACTION
+                if (hasTerminalIntent)
+                {
+                    userMessageForChat += "\n\n[SISTEMA: O usuario quer executar algo no terminal/PowerShell. Obrigatoriamente emita KATE_ACTION type=terminal com o comando adequado. NAO explique — execute.]"; 
+                    LogFile.AppendLine("[FS] Intenção de terminal detectada — hint injetado na mensagem do usuario");
+                }
             }
 
-            var finalResponse = await ExecuteGenerateChatAsync(userMessageForChat, conversationHistory, effectiveSystemPrompt, onToken, cancellationToken);
+            effectiveSystemPrompt += KateActionProtocolPrompt;
+            var rawLlmResponse = await ExecuteGenerateChatWithModelFallbackAsync(userMessageForChat, conversationHistory, effectiveSystemPrompt, onToken, cancellationToken);
+            var finalResponse = await ExecuteKateActionsAsync(rawLlmResponse, hasTerminalIntent);
             RegisterConversationTurn(normalizedPrompt, finalResponse);
             LogFile.AppendLine($"[Ollama] Resposta streaming concluída. Tamanho: {finalResponse.Length} | capacidades: {needsCapabilities}");
             return finalResponse;
+        }
+
+
+        /// <summary>Parseia blocos KATE_ACTION na resposta do LLM, executa as acoes e retorna a resposta limpa.
+        /// Se hasTerminalIntent=true mas nenhum bloco foi gerado, retorna um aviso pedindo esclarecimento.</summary>
+        private async Task<string> ExecuteKateActionsAsync(string llmResponse, bool hasTerminalIntent = false)
+        {
+            var matches = KateActionBlockRegex.Matches(llmResponse);
+            if (matches.Count == 0)
+            {
+                // Fallback: se havia intenção de terminal mas LLM não emitiu KATE_ACTION, avisa
+                if (hasTerminalIntent)
+                {
+                    LogFile.AppendLine("[LLM-Action] Fallback acionado: intenção de terminal detectada mas nenhum KATE_ACTION foi gerado. Aguardando comando específico.");
+                    return "Para executar algo no terminal, me diga exatamente qual comando você quer rodar. Exemplo: 'roda o ipconfig', 'executa git status' ou 'use npm install'.";
+                }
+                return llmResponse;
+            }
+
+            // Remove os blocos KATE_ACTION da resposta
+            var cleanText = KateActionBlockRegex.Replace(llmResponse, string.Empty).Trim();
+            var actionConfirmations = new List<string>();
+
+            // Executa as ações SILENCIOSAMENTE sem incluir resultados na resposta mostrada ao usuário
+            foreach (Match m in matches)
+            {
+                var json = m.Groups["json"].Value.Trim();
+                try
+                {
+                    using var doc = JsonDocument.Parse(json);
+                    var root = doc.RootElement;
+                    var type    = root.TryGetProperty("type",    out var t)  ? (t.GetString()  ?? "") : "";
+                    var target  = root.TryGetProperty("target",  out var tg) ? (tg.GetString() ?? "") : "";
+                    var content = root.TryGetProperty("content", out var c)  ? (c.GetString()  ?? "") : "";
+
+                    LogFile.AppendLine($"[LLM-Action] Executando silenciosamente: type={type} target={target}");
+                    var result = await _fileSystem.ExecuteFromLlmActionAsync(
+                        type,
+                        string.IsNullOrWhiteSpace(target)  ? null : target,
+                        string.IsNullOrWhiteSpace(content) ? null : content);
+
+                    var success = !result.StartsWith("Não consegui", StringComparison.OrdinalIgnoreCase)
+                                  && !result.StartsWith("Nao consegui", StringComparison.OrdinalIgnoreCase)
+                                  && !result.Contains("erro", StringComparison.OrdinalIgnoreCase)
+                                  && !result.Contains("falha", StringComparison.OrdinalIgnoreCase)
+                                  && !result.Contains("bloqueado", StringComparison.OrdinalIgnoreCase);
+
+                    if (type.Equals("open_program", StringComparison.OrdinalIgnoreCase))
+                    {
+                        actionConfirmations.Add(success
+                            ? "Confirmação: o programa foi aberto com sucesso."
+                            : "Confirmação: não consegui abrir o programa.");
+                    }
+                    else if (type.Equals("terminal", StringComparison.OrdinalIgnoreCase))
+                    {
+                        actionConfirmations.Add(success
+                            ? "Confirmação: o comando no terminal foi executado."
+                            : "Confirmação: não consegui executar o comando no terminal.");
+                    }
+                    
+                    // Resultado da ação é registrado no log mas NÃO é mostrado na UI/narração
+                    LogFile.AppendLine($"[LLM-Action] Resultado (interno, não mostrado ao usuário): {result}");
+                }
+                catch (Exception ex)
+                {
+                    LogFile.AppendLine($"[LLM-Action] Erro ao processar bloco: {ex.Message} | JSON: {json}");
+                    actionConfirmations.Add("Confirmação: não consegui concluir a ação solicitada.");
+                }
+            }
+
+            // Retorna APENAS a resposta textual do LLM (sem blocos KATE_ACTION)
+            // A UI e narração mostrarão apenas a resposta do LLM, não os comandos internos
+            if (string.IsNullOrWhiteSpace(cleanText))
+            {
+                return actionConfirmations.Count == 0
+                    ? "Ação executada."
+                    : string.Join(" ", actionConfirmations);
+            }
+
+            if (actionConfirmations.Count == 0)
+                return cleanText;
+
+            return (cleanText + "\n\n" + string.Join(" ", actionConfirmations)).Trim();
+        }
+
+        private async Task<string> ExecuteGenerateChatWithModelFallbackAsync(
+            string userMessage,
+            IReadOnlyCollection<ConversationTurn>? history,
+            string systemPrompt,
+            Action<string>? onToken,
+            CancellationToken cancellationToken)
+        {
+            var originalModel = _model;
+            try
+            {
+                return await ExecuteGenerateChatAsync(userMessage, history, systemPrompt, onToken, cancellationToken);
+            }
+            catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
+            {
+                LogFile.AppendLine($"[Ollama] Falha ao responder com modelo '{originalModel}': {ex.Message}");
+
+                if (string.Equals(originalModel, "kate", StringComparison.OrdinalIgnoreCase))
+                    throw;
+
+                try
+                {
+                    var switchResult = await SwitchModelAsync("kate", cancellationToken: cancellationToken);
+                    LogFile.AppendLine($"[Ollama] Fallback para modelo kate: {switchResult}");
+                    var retryResponse = await ExecuteGenerateChatAsync(userMessage, history, systemPrompt, onToken, cancellationToken);
+                    return $"Falhei ao responder com o modelo {originalModel}. Voltei para kate.\n\n{retryResponse}";
+                }
+                catch (Exception fallbackEx)
+                {
+                    LogFile.AppendLine($"[Ollama] Fallback para kate tambem falhou: {fallbackEx.Message}");
+                    throw;
+                }
+            }
         }
 
         private async Task<string> ExecuteGenerateAsync(string prompt, string systemPrompt, Action<string>? onToken, CancellationToken cancellationToken = default)
@@ -648,8 +834,8 @@ namespace model_kate.Infrastructure
                     temperature = 0.25,
                     top_p = 0.85,
                     repeat_penalty = 1.18,
-                    num_predict = 600,  // tokens por resposta
-                    num_ctx = 8192,     // janela de contexto (suporta conversas longas)
+                    num_predict = 320,  // tokens por resposta (320 = rápido e suficiente)
+                    num_ctx = 4096,     // janela de contexto
                     num_thread = numThread,
                     num_gpu = numGpu
                 }
@@ -731,8 +917,8 @@ namespace model_kate.Infrastructure
                     temperature = 0.25,
                     top_p = 0.85,
                     repeat_penalty = 1.18,
-                    num_predict = 600,
-                    num_ctx = 8192,
+                    num_predict = 320,
+                    num_ctx = 4096,
                     num_thread = numThread,
                     num_gpu = numGpu
                 }
@@ -1017,7 +1203,9 @@ namespace model_kate.Infrastructure
             "busque", "buscar", "busca sobre", "busca na internet",
             "procure na internet", "procurar na internet",
             "notícias sobre", "noticias sobre", "últimas notícias", "ultimas noticias",
-            "novidades sobre", "o que tem de novo sobre"
+            "novidades sobre", "o que tem de novo sobre",
+            "search", "search for", "look up", "find on the internet", "find online",
+            "news about", "latest news", "what's new about", "what is new about"
         };
 
         private static readonly string[] WebOpenHints =
@@ -1025,13 +1213,15 @@ namespace model_kate.Infrastructure
             "abra o site", "abrir o site", "abre o site",
             "abra a página", "abra a pagina",
             "navegue para", "navegue até", "navegue ate",
-            "acesse o site", "acesse a página", "acesse a pagina"
+            "acesse o site", "acesse a página", "acesse a pagina",
+            "open the site", "open website", "open the page", "go to", "navigate to", "access the site"
         };
 
         private static readonly string[] WebFetchHints =
         {
             "leia o site", "leia a página", "leia a pagina", "leia o conteúdo",
-            "o que diz o site", "resumo do site", "leia esse site", "leia esse link"
+            "o que diz o site", "resumo do site", "leia esse site", "leia esse link",
+            "read this site", "read this page", "summarize this site", "summarize this page", "what does this site say"
         };
 
         private static readonly Regex UrlRegex = new Regex(
@@ -1064,7 +1254,9 @@ namespace model_kate.Infrastructure
             {
                 @"(?:pesquise|pesquisar|busque|buscar|procure)\s+(?:sobre|por|na internet|na web)?\s*(.+)",
                 @"(?:notícias|noticias|últimas notícias|ultimas noticias|novidades)\s+(?:sobre|de)?\s*(.+)",
-                @"(?:busca|pesquisa)\s+(?:sobre|de|na internet)?\s*(.+)"
+                @"(?:busca|pesquisa)\s+(?:sobre|de|na internet)?\s*(.+)",
+                @"(?:search|look up|find)\s+(?:for|about|on the internet|online)?\s*(.+)",
+                @"(?:news|latest news|what(?:'| i)s new)\s+(?:about)?\s*(.+)"
             };
 
             foreach (var pattern in patterns)
@@ -1145,6 +1337,7 @@ namespace model_kate.Infrastructure
             "criar arquivo", "abrir programa", "pesquisar", "pesquisa na web",
             "identificar voz", "reconhecer voz", "parar", "comando de parada",
             "o que tu sabes", "o que tu sabe", "o que tu consegue",
+            "what can you do", "capabilities", "features", "what do you do", "what are your upgrades",
         ];
 
         private static bool LooksAboutCapabilities(string prompt)
@@ -1164,14 +1357,31 @@ namespace model_kate.Infrastructure
             // lista modelos
             (new System.Text.RegularExpressions.Regex(@"\b(lista|listar|quais|mostre?|ve[rê])\b.{0,30}\bmodelos?\b", System.Text.RegularExpressions.RegexOptions.IgnoreCase), ModelAction.List),
             (new System.Text.RegularExpressions.Regex(@"\bmodelos?\b.{0,20}\b(dispon[ií]ve[il]s?|instala)", System.Text.RegularExpressions.RegexOptions.IgnoreCase), ModelAction.List),
+            (new System.Text.RegularExpressions.Regex(@"\b(list|show|which)\b.{0,30}\bmodels?\b", System.Text.RegularExpressions.RegexOptions.IgnoreCase), ModelAction.List),
+            (new System.Text.RegularExpressions.Regex(@"\bmodels?\b.{0,20}\b(available|installed)", System.Text.RegularExpressions.RegexOptions.IgnoreCase), ModelAction.List),
             // troca de modelo: "muda para X", "usa o X", "troca para X", "carrega X", "baixa o X", "instala o X"
-            (new System.Text.RegularExpressions.Regex(@"\b(muda|mudar|troca|trocar|usa|usar|carrega|carregar|baixa|baixar|instala|instalar|ativa|ativar)\b.{0,20}(?:para\b|o\b|a\b)?\s*([\w.:/-]+)", System.Text.RegularExpressions.RegexOptions.IgnoreCase), ModelAction.Switch),
+            (new System.Text.RegularExpressions.Regex(@"\b(muda|mudar|troca|trocar|usa|usar|carrega|carregar|baixa|baixar|instala|instalar|ativa|ativar)\b(?:\s+para)?(?:\s+o|\s+a)?\s+([\w][\w.:/-]{1,50})", System.Text.RegularExpressions.RegexOptions.IgnoreCase), ModelAction.Switch),
+            (new System.Text.RegularExpressions.Regex(@"\b(switch|change|use|load|install|download|activate)\b(?:\s+to)?\s+([\w][\w.:/-]{1,50})", System.Text.RegularExpressions.RegexOptions.IgnoreCase), ModelAction.Switch),
             (new System.Text.RegularExpressions.Regex(@"\bmodelo\b.{0,20}([\w.:/-]+)", System.Text.RegularExpressions.RegexOptions.IgnoreCase), ModelAction.Switch),
+            (new System.Text.RegularExpressions.Regex(@"\bmodel\b.{0,20}([\w.:/-]+)", System.Text.RegularExpressions.RegexOptions.IgnoreCase), ModelAction.Switch),
         ];
 
         // Termos que, quando capturados como nome de modelo, indicam falso positivo
         private static readonly HashSet<string> ModelNameBlacklist = new(StringComparer.OrdinalIgnoreCase)
-            { "para", "o", "a", "um", "uma", "isso", "este", "esse", "aqui", "agora", "novo", "outro" };
+            { "para", "o", "a", "um", "uma", "isso", "este", "esse", "aqui", "agora", "novo", "outro", "nao", "não", "de", "que", "verdade", "os", "as", "modelo", "modelos" };
+
+        private static readonly string[] KnownModelPrefixes =
+        [
+            "kate", "llama", "gemma", "mistral", "qwen", "phi", "deepseek", "codellama", "tinyllama", "nomic", "dolphin"
+        ];
+
+        private static string NormalizeModelCandidate(string candidate)
+        {
+            var value = candidate.Trim().ToLowerInvariant();
+            if (value.StartsWith("lama")) value = "llama" + value[4..];
+            if (value.StartsWith("gema")) value = "gemma" + value[4..];
+            return value;
+        }
 
         private static ModelIntent DetectModelIntent(string prompt)
         {
@@ -1190,7 +1400,21 @@ namespace model_kate.Infrastructure
                               : match.Groups.Count > 1 ? match.Groups[1].Value.Trim()
                               : string.Empty;
 
+                candidate = NormalizeModelCandidate(candidate);
+
                 if (string.IsNullOrWhiteSpace(candidate) || ModelNameBlacklist.Contains(candidate))
+                    continue;
+
+                // Evita capturas de fala muito curtas/ambíguas (ex: "8b", "não").
+                if (candidate.Length < 3)
+                    continue;
+
+                var hasKnownPrefix = KnownModelPrefixes.Any(prefix =>
+                    candidate.Equals(prefix, StringComparison.OrdinalIgnoreCase) ||
+                    candidate.StartsWith(prefix + ":", StringComparison.OrdinalIgnoreCase) ||
+                    candidate.StartsWith(prefix + "-", StringComparison.OrdinalIgnoreCase));
+
+                if (!hasKnownPrefix && !normalized.Contains("modelo", StringComparison.OrdinalIgnoreCase))
                     continue;
 
                 // Heurística: nome de modelo Ollama tem formato "nome" ou "nome:tag"

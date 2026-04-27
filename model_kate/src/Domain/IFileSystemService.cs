@@ -13,7 +13,8 @@ namespace model_kate.Domain
         DeleteFile,
         ListDir,
         OpenProgram,
-        OpenFile
+        OpenFile,
+        RunTerminalCommand
     }
 
     public record FileSystemIntent(FileSystemAction Action, string? Path, string? Content);
@@ -25,5 +26,8 @@ namespace model_kate.Domain
 
         /// <summary>Executa a intenção detectada e retorna uma resposta em linguagem natural.</summary>
         Task<string> ExecuteAsync(FileSystemIntent intent, string originalPrompt);
+
+        /// <summary>Executa uma ação inferida pelo LLM (bloco KATE_ACTION) e retorna resultado em linguagem natural.</summary>
+        Task<string> ExecuteFromLlmActionAsync(string type, string? target, string? content);
     }
 }
